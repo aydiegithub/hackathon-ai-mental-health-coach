@@ -1,0 +1,1 @@
+// Text-based chat component
