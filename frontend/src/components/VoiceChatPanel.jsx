@@ -1,1 +1,0 @@
-// Voice-based chat component
