@@ -1,2 +1,2 @@
-# hackathon-ai-menatal-health-coach
+# hackathon-ai-mental-health-coach
 🚧 This repo is Under Developmemnt 🚧
