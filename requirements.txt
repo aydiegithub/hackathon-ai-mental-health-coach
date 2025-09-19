@@ -7,3 +7,4 @@ torch==2.0.1
 python-dotenv
 numpy==1.24.4
 pandas==1.5.3
+google-generativeai==0.3.1
