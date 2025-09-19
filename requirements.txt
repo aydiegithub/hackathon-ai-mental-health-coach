@@ -1,4 +1,6 @@
-Flask
-flask-cors
-requests
-python-dotenv
+Flask==2.2.5
+flask-cors==3.1.1
+requests==2.31.0
+python-dotenv==1.0.1
+openai-whisper==20231106
+torch==2.0.1

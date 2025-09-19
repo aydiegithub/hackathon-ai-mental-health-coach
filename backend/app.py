@@ -1,30 +1,34 @@
-from flask import Flask, request, jsonify, session
+import whisper
+from flask import Flask, request, jsonify
 from flask_cors import CORS
+import tempfile
 import os
 
 app = Flask(__name__)
 CORS(app)
-app.secret_key = os.getenv("SECRET_KEY", "supersecretkey")
+
+# Load Whisper model once at startup
+model = whisper.load_model("base")  # you can use "small", "medium", "large" as needed
 
 @app.route('/stt', methods=['POST'])
 def stt():
     audio = request.files.get('audio')
-    return jsonify({"text": "Hello, how are you feeling today?"})
+    if not audio:
+        return jsonify({"error": "No audio file provided"}), 400
 
-@app.route('/chat', methods=['POST'])
-def chat():
-    data = request.json
-    user_text = data.get("text")
-    history = data.get("history", [])
-    response_text = "I'm here for you! Tell me what’s on your mind."
-    return jsonify({"response": response_text})
+    # Save uploaded audio to a temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        audio.save(tmp.name)
+        audio_path = tmp.name
 
-@app.route('/tts', methods=['POST'])
-def tts():
-    data = request.json
-    text = data.get("text")
-    dummy_audio_url = "https://example.com/audio.mp3"
-    return jsonify({"audio_url": dummy_audio_url})
+    # Transcribe audio using Whisper
+    try:
+        result = model.transcribe(audio_path)
+        text = result.get("text", "")
+    finally:
+        os.remove(audio_path)
+
+    return jsonify({"text": text})
 
 if __name__ == "__main__":
     app.run(debug=True)
