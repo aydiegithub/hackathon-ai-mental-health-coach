@@ -51,24 +51,23 @@ function switchToVoiceMode() {
     currentMode = 'voice';
     document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
     document.getElementById('voicePage').classList.add('active');
-    if (window.voiceApp) window.voiceApp.initialize();
-    else window.voiceApp = new VoiceTherapyApp();
+    if (!window.voiceApp) window.voiceApp = new VoiceTherapyApp();
+    window.voiceApp.activate();
 }
 function switchToChatMode() {
     currentMode = 'chat';
     document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
     document.getElementById('chatPage').classList.add('active');
-    if (window.chatApp) window.chatApp.initialize();
-    else window.chatApp = new ChatTherapyApp();
+    if (!window.chatApp) window.chatApp = new ChatTherapyApp();
+    window.chatApp.activate();
 }
 function goToLanding() {
     currentMode = 'landing';
-    if (window.voiceApp) window.voiceApp.stopInfiniteLoop();
+    if (window.voiceApp) window.voiceApp.deactivate();
     document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
     document.getElementById('landingPage').classList.add('active');
 }
 
-// --- ConversationManager class (unchanged) ---
 class ConversationManager {
     constructor() {
         this.conversations = JSON.parse(localStorage.getItem('therapyConversations') || '[]');
@@ -134,7 +133,6 @@ class ConversationManager {
     }
 }
 
-// --- VoiceTherapyApp ---
 class VoiceTherapyApp {
     constructor() {
         this.conversationManager = new ConversationManager();
@@ -142,9 +140,6 @@ class VoiceTherapyApp {
         this.audioChunks = [];
         this.isRecording = false;
         this.isPlaying = false;
-        this.currentAudio = null;
-        this.recordingTimeout = null;
-        this.isInfiniteLoopActive = false;
         this.voiceAnimation = null;
         this.statusText = null;
         this.recordBtn = null;
@@ -157,10 +152,17 @@ class VoiceTherapyApp {
         this.visualizerBars = [];
         this.messagesContainer = null;
         this.typingIndicator = null;
-        this.initialize();
+        this.recordBtnHandler = this.handleRecordBtnClick.bind(this);
+        this.activated = false;
+        this.mediaStream = null;
+        this.silenceTimer = null;
+        this.silenceThreshold = 0.02;
+        this.silenceDuration = 3000;
     }
 
-    initialize() {
+    activate() {
+        if (this.activated) return;
+        this.activated = true;
         this.voiceAnimation = document.getElementById('voiceAnimation');
         this.statusText = document.getElementById('voiceStatusText');
         this.recordBtn = document.getElementById('recordBtn');
@@ -169,27 +171,52 @@ class VoiceTherapyApp {
         this.micIcon = document.getElementById('micIcon');
         this.messagesContainer = document.getElementById('messagesContainer');
         this.typingIndicator = document.getElementById('typingIndicator');
-        if (this.voiceAnimation) {
-            this.setupAudio();
-            this.setupEventListeners();
-            this.createAudioVisualizer();
-            this.checkBackendConnection();
-            this.stopInfiniteLoop();
-            this.updateStatus("Ready to listen...");
+        this.setupAudio();
+        this.setupEventListeners();
+        this.createAudioVisualizer();
+        this.checkBackendConnection();
+        this.updateStatus("Ready to listen...");
+        this.updateRecordBtnUI('idle');
+    }
+
+    deactivate() {
+        if (!this.activated) return;
+        this.activated = false;
+        this.stopRecording();
+        if (this.recordBtn) this.recordBtn.removeEventListener('click', this.recordBtnHandler);
+    }
+
+    setupEventListeners() {
+        if (this.recordBtn) {
+            this.recordBtn.removeEventListener('click', this.recordBtnHandler);
+            this.recordBtn.addEventListener('click', this.recordBtnHandler);
         }
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && currentMode === 'voice') {
+                e.preventDefault();
+                if (this.isPlaying) this.interruptAudio();
+            }
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && this.isPlaying) this.interruptAudio();
+        });
+    }
+
+    handleRecordBtnClick() {
+        if (this.isRecording || this.isPlaying) return;
+        this.startRecording();
     }
 
     async setupAudio() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.setupMediaRecorder(stream);
-            this.setupAudioContext(stream);
+            this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.setupMediaRecorder(this.mediaStream);
+            this.setupAudioContext(this.mediaStream);
         } catch (error) {
             console.error('Error accessing microphone:', error);
             this.updateStatus('Microphone access required. Please allow and refresh.');
         }
     }
-
     setupMediaRecorder(stream) {
         this.mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
         this.mediaRecorder.ondataavailable = (event) => {
@@ -206,7 +233,6 @@ class VoiceTherapyApp {
             }
         };
     }
-
     setupAudioContext(stream) {
         try {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -220,7 +246,6 @@ class VoiceTherapyApp {
             console.error('Error setting up audio context:', error);
         }
     }
-
     createAudioVisualizer() {
         const visualizer = this.voiceAnimation?.querySelector('.audio-visualizer');
         if (!visualizer) return;
@@ -232,7 +257,6 @@ class VoiceTherapyApp {
             this.visualizerBars.push(bar);
         }
     }
-
     updateAudioVisualizer() {
         if (!this.analyser || !this.isRecording) return;
         this.analyser.getByteFrequencyData(this.dataArray);
@@ -245,94 +269,60 @@ class VoiceTherapyApp {
             requestAnimationFrame(() => this.updateAudioVisualizer());
         }
     }
-
-    setupEventListeners() {
-        this.recordBtn?.addEventListener('click', () => this.toggleInfiniteLoop());
-        document.addEventListener('keydown', (e) => {
-            if (e.code === 'Space' && currentMode === 'voice') {
-                e.preventDefault();
-                if (this.isPlaying) this.interruptAudio();
-            }
-        });
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden && this.isPlaying) {
-                this.interruptAudio();
-            }
-        });
-        window.addEventListener('beforeunload', () => {
-            this.stopInfiniteLoop();
-        });
-    }
-
-    toggleInfiniteLoop() {
-        if (this.isInfiniteLoopActive) {
-            this.stopInfiniteLoop();
-        } else {
-            this.startInfiniteVoiceLoop();
-        }
-    }
-
-    startInfiniteVoiceLoop() {
-        this.isInfiniteLoopActive = true;
-        if (this.recordBtn) this.recordBtn.innerHTML = '<i class="fas fa-stop"></i>';
-        this.updateStatus('Start speaking...');
-        this.startRecording();
-    }
-
-    stopInfiniteLoop() {
-        this.isInfiniteLoopActive = false;
-        if (this.recordBtn) this.recordBtn.innerHTML = '<i class="fas fa-microphone"></i>';
-        if (this.isRecording && this.mediaRecorder?.state === 'recording') {
-            this.mediaRecorder.stop();
-            this.isRecording = false;
-        }
-        if (this.isPlaying) {
-            this.interruptAudio();
-        }
-        if (this.recordingTimeout) {
-            clearTimeout(this.recordingTimeout);
-            this.recordingTimeout = null;
-        }
-        this.updateVoiceAnimation('idle');
-        this.updateStatus('Click to start conversation');
-    }
-
     startRecording() {
         if (this.isRecording || this.isPlaying || !this.mediaRecorder) return;
-        try {
-            this.mediaRecorder.start();
-            this.isRecording = true;
-            this.updateStatus('Listening... Speak now');
-            this.updateVoiceAnimation('listening');
-            this.updateAudioVisualizer();
-            // Auto-stop after 8 seconds
-            this.recordingTimeout = setTimeout(() => {
-                if (this.isRecording) {
-                    this.stopRecording();
-                }
-            }, 8000);
-        } catch (error) {
-            console.error('Error starting recording:', error);
-            this.updateStatus('Recording error. Please check microphone.');
-        }
+        this.mediaRecorder.start();
+        this.isRecording = true;
+        this.updateStatus('Listening... Speak now');
+        this.updateVoiceAnimation('listening');
+        this.updateRecordBtnUI('recording');
+        this.updateAudioVisualizer();
+        this.monitorSilence(); // start silence monitoring
     }
-
     stopRecording() {
-        if (!this.isRecording || this.mediaRecorder?.state !== 'recording') return;
-        try {
-            this.mediaRecorder.stop();
-            this.isRecording = false;
-            if (this.recordingTimeout) {
-                clearTimeout(this.recordingTimeout);
-                this.recordingTimeout = null;
-            }
-            this.updateStatus('Processing...');
-            this.updateVoiceAnimation('processing');
-        } catch (error) {
-            console.error('Error stopping recording:', error);
+        if (!this.isRecording || !this.mediaRecorder) return;
+        this.mediaRecorder.stop();
+        this.isRecording = false;
+        this.updateStatus('Processing...');
+        this.updateVoiceAnimation('processing');
+        this.updateRecordBtnUI('idle');
+        if (this.silenceTimer) {
+            clearTimeout(this.silenceTimer);
+            this.silenceTimer = null;
         }
     }
+    monitorSilence() {
+        if (!this.audioContext || !this.mediaStream) return;
+        const analyser = this.audioContext.createAnalyser();
+        const source = this.audioContext.createMediaStreamSource(this.mediaStream);
+        source.connect(analyser);
+        analyser.fftSize = 2048;
+        const buffer = new Uint8Array(analyser.fftSize);
 
+        let silenceStart = null;
+
+        const checkSilence = () => {
+            analyser.getByteTimeDomainData(buffer);
+            let sum = 0;
+            for (let i = 0; i < buffer.length; i++) {
+                let normalized = (buffer[i] - 128) / 128;
+                sum += normalized * normalized;
+            }
+            let rms = Math.sqrt(sum / buffer.length);
+
+            if (rms < this.silenceThreshold) {
+                if (silenceStart === null) silenceStart = performance.now();
+                else if (performance.now() - silenceStart > this.silenceDuration) {
+                    this.stopRecording();
+                    return;
+                }
+            } else {
+                silenceStart = null;
+            }
+            if (this.isRecording) requestAnimationFrame(checkSilence);
+        };
+        checkSilence();
+    }
     async sendAudioToBackend(audioBlob) {
         try {
             this.updateStatus('Sending to AI therapist...');
@@ -344,12 +334,14 @@ class VoiceTherapyApp {
             });
             const uploadData = await uploadResp.json();
             if (!uploadData.audio_filepath) throw new Error('Audio upload failed');
+            const messagesHistory = this.conversationManager.getMessagesForAPI();
             const response = await fetch(`${BACKEND_CONFIG.BASE_URL}${BACKEND_CONFIG.ENDPOINTS.VOICE_CHAT}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     user_message: uploadData.audio_filepath,
-                    dtype: 'audio'
+                    dtype: 'audio',
+                    messages: messagesHistory
                 })
             });
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -360,35 +352,22 @@ class VoiceTherapyApp {
             this.updateStatus('Connection error. Try again.');
         }
     }
-
     async handleBackendResponse(responseData) {
-        // Always show transcription in chat as user message
         if (responseData.transcribed_text) {
-            this.addMessageToUI(
-                responseData.transcribed_text,
-                'user',
-                'text',
-                null,
-                true // isTranscript
-            );
+            this.conversationManager.addMessage(responseData.transcribed_text, 'user', 'text');
+            this.addMessageToUI(responseData.transcribed_text, 'user', 'text', null, true);
         }
         if (responseData.type === 'audio' && responseData.audio_filepath) {
+            this.conversationManager.addMessage(responseData.content, 'assistant', 'voice', { audioPath: responseData.audio_filepath });
             await this.playAudioResponse(responseData.audio_filepath);
-            this.addMessageToUI(
-                responseData.content,
-                'assistant',
-                'voice',
-                responseData.audio_filepath
-            );
+            this.addMessageToUI(responseData.content, 'assistant', 'voice', responseData.audio_filepath);
         } else if (responseData.content) {
+            this.conversationManager.addMessage(responseData.content, 'assistant', 'text');
             this.addMessageToUI(responseData.content, 'assistant', 'text');
         }
-        // After playing response, wait for user to click record again (no auto-loop!)
-        this.isInfiniteLoopActive = false;
-        if (this.recordBtn) this.recordBtn.innerHTML = '<i class="fas fa-microphone"></i>';
+        this.updateRecordBtnUI('idle');
         this.updateStatus('Click microphone to speak again');
     }
-
     async playAudioResponse(audioPath) {
         return new Promise((resolve) => {
             try {
@@ -421,7 +400,15 @@ class VoiceTherapyApp {
             }
         });
     }
-
+    interruptAudio() {
+        if (this.currentAudio && this.isPlaying) {
+            this.currentAudio.pause();
+            this.currentAudio.currentTime = 0;
+            this.currentAudio = null;
+            this.isPlaying = false;
+            this.updateVoiceAnimation('idle');
+        }
+    }
     addMessageToUI(content, role, type = 'text', audioPath = null, isTranscript = false) {
         if (!this.messagesContainer) return;
         const messageDiv = document.createElement('div');
@@ -447,7 +434,16 @@ class VoiceTherapyApp {
         this.messagesContainer.insertBefore(messageDiv, this.typingIndicator);
         this.scrollToBottom();
     }
-
+    updateRecordBtnUI(state) {
+        if (!this.recordBtn) return;
+        if (state === 'recording') {
+            this.recordBtn.innerHTML = `<div class="control-icon"><i class="fas fa-stop"></i></div><span class="control-label">Stop</span>`;
+            this.recordBtn.disabled = false;
+        } else {
+            this.recordBtn.innerHTML = `<div class="control-icon"><i class="fas fa-microphone"></i></div><span class="control-label">Start Conversation</span>`;
+            this.recordBtn.disabled = false;
+        }
+    }
     scrollToBottom() {
         const chatMessages = document.getElementById('chatMessages');
         if (chatMessages) {
@@ -456,7 +452,6 @@ class VoiceTherapyApp {
             }, 100);
         }
     }
-
     updateVoiceAnimation(state) {
         if (!this.voiceAnimation) return;
         this.voiceAnimation.classList.remove('listening', 'ai-speaking', 'processing');
@@ -465,25 +460,10 @@ class VoiceTherapyApp {
             this.voiceAnimation.classList.add(state);
             this.statusText?.classList.add(state);
         }
-        this.recordBtn?.classList.remove('recording', 'processing');
-        if (state === 'listening') {
-            this.recordBtn?.classList.add('recording');
-        } else if (state === 'processing') {
-            this.recordBtn?.classList.add('processing');
-        }
-        if (this.micIcon) {
-            if (state === 'ai-speaking') {
-                this.micIcon.className = 'fas fa-volume-up text-4xl text-white';
-            } else {
-                this.micIcon.className = 'fas fa-microphone text-4xl text-white';
-            }
-        }
     }
-
     updateStatus(message) {
         if (this.statusText) this.statusText.textContent = message;
     }
-
     async checkBackendConnection() {
         try {
             const response = await fetch(`${BACKEND_CONFIG.BASE_URL}${BACKEND_CONFIG.ENDPOINTS.HEALTH_CHECK || '/health'}`);
@@ -496,7 +476,6 @@ class VoiceTherapyApp {
             return false;
         }
     }
-
     updateConnectionStatus(isConnected) {
         if (!this.connectionStatus) return;
         if (isConnected) {
@@ -507,14 +486,13 @@ class VoiceTherapyApp {
             this.connectionStatus.innerHTML = '<i class="fas fa-circle text-red-500"></i> Backend: Disconnected';
         }
     }
-
-    delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+    clearChat() {
+        if (confirm('Are you sure you want to clear this conversation? This will remove all messages including voice conversation history.')) {
+            this.conversationManager.clearSession();
+            this.loadChatHistory();
+        }
     }
 }
-
-// --- ChatTherapyApp ---
-// Only change: improved addMessageToUI for bubbles
 
 class ChatTherapyApp {
     constructor() {
@@ -526,25 +504,20 @@ class ChatTherapyApp {
         this.typingIndicator = null;
         this.connectionStatus = null;
         this.clearChatBtn = null;
-        this.initialize();
     }
-
-    initialize() {
+    activate() {
         this.chatInput = document.getElementById('chatInput');
         this.sendButton = document.getElementById('sendButton');
         this.messagesContainer = document.getElementById('messagesContainer');
         this.typingIndicator = document.getElementById('typingIndicator');
         this.connectionStatus = document.getElementById('chatConnectionStatus');
         this.clearChatBtn = document.getElementById('clearChatBtn');
-        if (this.chatInput) {
-            this.setupEventListeners();
-            this.checkBackendConnection();
-            this.loadChatHistory();
-            this.chatInput.focus();
-            setInterval(() => this.checkBackendConnection(), 30000);
-        }
+        this.setupEventListeners();
+        this.checkBackendConnection();
+        this.loadChatHistory();
+        this.chatInput.focus();
+        setInterval(() => this.checkBackendConnection(), 30000);
     }
-
     setupEventListeners() {
         this.chatInput?.addEventListener('input', () => this.adjustTextareaHeight());
         this.chatInput?.addEventListener('keydown', (e) => {
@@ -561,7 +534,6 @@ class ChatTherapyApp {
             }
         });
     }
-
     adjustTextareaHeight() {
         if (!this.chatInput) return;
         this.chatInput.style.height = 'auto';
@@ -571,18 +543,28 @@ class ChatTherapyApp {
             this.sendButton.disabled = !this.chatInput.value.trim() || this.isLoading;
         }
     }
-
     async sendMessage() {
         const message = this.chatInput?.value.trim();
         if (!message || this.isLoading) return;
-        this.addMessageToUI(message, 'user', 'text');
         this.conversationManager.addMessage(message, 'user', 'text');
+        this.addMessageToUI(message, 'user', 'text');
         this.chatInput.value = '';
         this.adjustTextareaHeight();
         this.isLoading = true;
         this.showTypingIndicator();
         try {
-            const responseData = await this.sendMessageToBackend(message);
+            const messagesHistory = this.conversationManager.getMessagesForAPI();
+            const response = await fetch(`${BACKEND_CONFIG.BASE_URL}${BACKEND_CONFIG.ENDPOINTS.CHAT}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    user_message: message,
+                    dtype: 'message',
+                    messages: messagesHistory
+                })
+            });
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const responseData = await response.json();
             await this.handleBackendResponse(responseData);
         } catch (error) {
             console.error('Error getting AI response:', error);
@@ -594,39 +576,22 @@ class ChatTherapyApp {
             this.adjustTextareaHeight();
         }
     }
-
-    async sendMessageToBackend(message) {
-        const response = await fetch(`${BACKEND_CONFIG.BASE_URL}${BACKEND_CONFIG.ENDPOINTS.CHAT}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                user_message: message,
-                dtype: 'message'
-            })
-        });
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        return await response.json();
-    }
-
     async handleBackendResponse(responseData) {
         if (responseData.type === 'message' && responseData.content) {
-            this.addMessageToUI(responseData.content, 'assistant', 'text');
             this.conversationManager.addMessage(responseData.content, 'assistant', 'text');
+            this.addMessageToUI(responseData.content, 'assistant', 'text');
         } else if (responseData.type === 'audio' && responseData.audio_filepath) {
             const transcript = responseData.transcribed_text || 'Audio response';
-            this.addMessageToUI(transcript, 'user', 'text', null, true); // Show transcript bubble
-            this.addMessageToUI(responseData.content, 'assistant', 'voice', responseData.audio_filepath);
-            this.conversationManager.addMessage(transcript, 'user', 'text'); // Save transcript
+            this.conversationManager.addMessage(transcript, 'user', 'text');
+            this.addMessageToUI(transcript, 'user', 'text', null, true);
             this.conversationManager.addMessage(responseData.content, 'assistant', 'voice', { audioPath: responseData.audio_filepath });
+            this.addMessageToUI(responseData.content, 'assistant', 'voice', responseData.audio_filepath);
         } else {
             const fallbackResponse = "I understand you're sharing something important with me. Could you tell me more about how you're feeling?";
-            this.addMessageToUI(fallbackResponse, 'assistant', 'text');
             this.conversationManager.addMessage(fallbackResponse, 'assistant', 'text');
+            this.addMessageToUI(fallbackResponse, 'assistant', 'text');
         }
     }
-
     addMessageToUI(content, role, type = 'text', audioPath = null, isTranscript = false) {
         if (!this.messagesContainer) return;
         const messageDiv = document.createElement('div');
@@ -652,7 +617,6 @@ class ChatTherapyApp {
         this.messagesContainer.insertBefore(messageDiv, this.typingIndicator);
         this.scrollToBottom();
     }
-
     loadChatHistory() {
         if (!this.messagesContainer) return;
         const existingMessages = this.messagesContainer.querySelectorAll('.message-slide-in');
@@ -670,16 +634,13 @@ class ChatTherapyApp {
         });
         this.scrollToBottom();
     }
-
     showTypingIndicator() {
         this.typingIndicator?.classList.add('show');
         this.scrollToBottom();
     }
-
     hideTypingIndicator() {
         this.typingIndicator?.classList.remove('show');
     }
-
     scrollToBottom() {
         const chatMessages = document.getElementById('chatMessages');
         if (chatMessages) {
@@ -688,7 +649,6 @@ class ChatTherapyApp {
             }, 100);
         }
     }
-
     async checkBackendConnection() {
         try {
             const response = await fetch(`${BACKEND_CONFIG.BASE_URL}${BACKEND_CONFIG.ENDPOINTS.HEALTH_CHECK || '/health'}`);
@@ -701,7 +661,6 @@ class ChatTherapyApp {
             return false;
         }
     }
-
     updateConnectionStatus(isConnected) {
         if (!this.connectionStatus) return;
         if (isConnected) {
@@ -712,7 +671,6 @@ class ChatTherapyApp {
             this.connectionStatus.innerHTML = '<i class="fas fa-circle text-red-500"></i> Backend: Disconnected';
         }
     }
-
     clearChat() {
         if (confirm('Are you sure you want to clear this conversation? This will remove all messages including voice conversation history.')) {
             this.conversationManager.clearSession();
@@ -722,13 +680,11 @@ class ChatTherapyApp {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    window.voiceApp = new VoiceTherapyApp();
+    window.chatApp = new ChatTherapyApp();
     setInterval(() => {
-        if (window.voiceApp && currentMode === 'voice') {
-            window.voiceApp.checkBackendConnection();
-        }
-        if (window.chatApp && currentMode === 'chat') {
-            window.chatApp.checkBackendConnection();
-        }
+        if (window.voiceApp && currentMode === 'voice') window.voiceApp.checkBackendConnection();
+        if (window.chatApp && currentMode === 'chat') window.chatApp.checkBackendConnection();
     }, 30000);
 });
 
