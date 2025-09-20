@@ -1,6 +1,6 @@
 from typing import List, Dict, Optional
-from system_instruction import SystemInstruction, TherapeuticTechnique
-from gemini_client import get_gemini_chat_completion
+from backend.system_instruction import SystemInstruction, TherapeuticTechnique
+from backend.gemini_client import get_gemini_chat_completion
 
 class GeminiChatSession:
     def __init__(self, instruction: SystemInstruction, techniques: List[TherapeuticTechnique]):

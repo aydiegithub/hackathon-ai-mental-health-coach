@@ -1,5 +1,5 @@
-from system_instruction import get_advanced_therapist_instruction, get_therapeutic_techniques
-from conversation import GeminiChatSession
+from backend.system_instruction import get_advanced_therapist_instruction, get_therapeutic_techniques
+from backend.conversation import GeminiChatSession
 
 class Orchestrator:
     def __init__(self):
