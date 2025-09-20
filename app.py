@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import os
 import warnings
@@ -20,9 +20,7 @@ sst_client = None
 murf_client = None
 
 def initialize_clients():
-    """Initialize all backend clients with proper error handling"""
     global orch, sst_client, murf_client
-    
     try:
         logger.info("Initializing Orchestrator...")
         from backend.orchastrator import Orchestrator
@@ -51,10 +49,8 @@ def initialize_clients():
         murf_client = None
 
 def generate_ai_response(message) -> str:
-    """Generate AI response with proper error handling"""
     if orch is None:
         raise RuntimeError("Orchestrator not initialized. Check backend configuration.")
-    
     try:
         if isinstance(message, str):
             result = orch.start_session([message])
@@ -62,23 +58,18 @@ def generate_ai_response(message) -> str:
             result = orch.start_session(message)
         else:
             raise ValueError("generate_ai_response: message must be str or list[str]")
-        
         if not result or 'solution' not in result:
             raise RuntimeError("Invalid response from Orchestrator")
-            
         return result['solution']
     except Exception as e:
         logger.error(f"AI response generation error: {e}")
         raise
 
 def transcribe_audio(filepath: str) -> str:
-    """Transcribe audio file with proper error handling"""
     if sst_client is None:
         raise RuntimeError("SpeechToText client not initialized. Check backend configuration.")
-    
     if not os.path.isfile(filepath):
         raise FileNotFoundError(f"Audio file not found: {filepath}")
-    
     try:
         return sst_client.transcribe(audio_path=filepath)
     except Exception as e:
@@ -86,14 +77,10 @@ def transcribe_audio(filepath: str) -> str:
         raise
 
 def generate_audio_response(ai_message: str) -> str:
-    """Generate audio response with proper error handling"""
     if murf_client is None:
         raise RuntimeError("MurfTTSClient not initialized. Check backend configuration.")
-    
     try:
-        # Create audios directory if it doesn't exist
         os.makedirs("audios", exist_ok=True)
-        
         resp = murf_client.generate_speech(
             text=ai_message,
             voice_id="en-US-natalie",
@@ -106,8 +93,8 @@ def generate_audio_response(ai_message: str) -> str:
             pitch=-5.0,
             variation=4
         )
-        
         if resp["success"] and resp.get("encoded_audio"):
+            # Always save as MP3
             return murf_client.save_audio(resp["encoded_audio"], folder="audios", filename="ai_response.mp3")
         else:
             raise RuntimeError("Speech generation failed or no audio returned.")
@@ -117,7 +104,6 @@ def generate_audio_response(ai_message: str) -> str:
 
 @app.route("/", methods=["GET"])
 def health_check():
-    """Basic health check endpoint"""
     return jsonify({
         "status": "server is running",
         "message": "AI Therapist API is operational",
@@ -131,7 +117,6 @@ def health_check():
 
 @app.route("/health", methods=["GET"])
 def health():
-    """Detailed health check"""
     return jsonify({
         "status": "healthy",
         "timestamp": "2025-09-20 09:53:16",
@@ -144,12 +129,10 @@ def health():
 
 @app.route("/test", methods=["POST"])
 def test_endpoint():
-    """Simple test endpoint for debugging"""
     try:
         logger.info("Test endpoint called")
         data = request.json
         logger.info(f"Received data: {data}")
-        
         return jsonify({
             "received": data,
             "message": "Test endpoint working perfectly",
@@ -162,41 +145,29 @@ def test_endpoint():
 
 @app.route("/chat", methods=["POST"])
 def chat_endpoint():
-    """Main chat endpoint with comprehensive error handling"""
     logger.info("=== CHAT ENDPOINT CALLED ===")
-    
     try:
-        # Log request details
-        logger.info(f"Request method: {request.method}")
-        logger.info(f"Content-Type: {request.headers.get('Content-Type')}")
-        
-        # Parse JSON data
         data = request.json
         logger.info(f"Request data: {data}")
-        
         if not data:
             logger.error("Missing JSON body")
             return jsonify({"error": "Missing JSON body"}), 400
 
         user_message = data.get("user_message")
         dtype = data.get("dtype")
-        
+
         logger.info(f"User message: {user_message}")
         logger.info(f"Data type: {dtype}")
 
-        # Validate input
         if dtype not in ("audio", "message"):
             logger.error(f"Invalid dtype: {dtype}")
             return jsonify({"error": "Invalid dtype, must be 'audio' or 'message'"}), 400
-            
         if not user_message or not isinstance(user_message, str) or not user_message.strip():
             logger.error("Missing or empty user_message")
             return jsonify({"error": "Missing or empty user_message"}), 400
 
-        # Handle audio messages
         if dtype == "audio":
             logger.info("Processing audio message...")
-            
             try:
                 logger.info(f"Transcribing audio file: {user_message}")
                 transcribed_text = transcribe_audio(user_message)
@@ -233,25 +204,20 @@ def chat_endpoint():
             logger.info(f"Returning audio response: {response}")
             return jsonify(response)
 
-        # Handle text messages
         elif dtype == "message":
             logger.info("Processing text message...")
-            
             try:
                 logger.info("Generating AI response for text message...")
                 ai_response = generate_ai_response(user_message)
                 logger.info(f"AI response: {ai_response}")
-                
                 response = {
                     "content": ai_response,
                     "type": "message"
                 }
                 logger.info(f"Returning text response: {response}")
                 return jsonify(response)
-                
             except Exception as e:
                 logger.error(f"AI response generation failed: {e}")
-                # Fallback response
                 fallback_response = {
                     "content": "I understand you're reaching out. I'm here to listen and support you. Could you tell me more about what's on your mind?",
                     "type": "message"
@@ -263,6 +229,22 @@ def chat_endpoint():
         logger.error(f"Server error: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({"error": "Server error: " + str(e)}), 500
+
+@app.route('/upload-audio', methods=['POST'])
+def upload_audio():
+    if 'audio' not in request.files:
+        return jsonify({'error': 'No audio file provided'}), 400
+    audio_file = request.files['audio']
+    # Always save as mp3
+    filename = 'user_audio.mp3'
+    save_path = os.path.join('audios', filename)
+    os.makedirs('audios', exist_ok=True)
+    audio_file.save(save_path)
+    return jsonify({'audio_filepath': save_path})
+
+@app.route('/audios/<filename>', methods=['GET'])
+def serve_audio(filename):
+    return send_from_directory('audios', filename)
 
 @app.errorhandler(404)
 def not_found(error):
@@ -279,23 +261,19 @@ def internal_error(error):
 if __name__ == "__main__":
     logger.info("Starting AI Therapist Flask Server...")
     logger.info("Initializing backend clients...")
-    
-    # Initialize all clients
     initialize_clients()
-    
-    # Check if core services are available
     if orch is None:
         logger.warning("⚠️  Orchestrator not available - text responses may fail")
     if sst_client is None:
         logger.warning("⚠️  SpeechToText not available - audio transcription will fail")
     if murf_client is None:
         logger.warning("⚠️  MurfTTSClient not available - audio generation will fail")
-    
     logger.info("Starting Flask server on http://localhost:5000")
     logger.info("Available endpoints:")
     logger.info("  GET  /        - Health check")
     logger.info("  GET  /health  - Detailed health check")
     logger.info("  POST /test    - Test endpoint")
     logger.info("  POST /chat    - Main chat endpoint")
-    
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    logger.info("  POST /upload-audio - Audio upload endpoint")
+    logger.info("  GET  /audios/<filename> - Serve audio files")
+    app.run(host='0.0.0.0', port=5001, debug=True)
