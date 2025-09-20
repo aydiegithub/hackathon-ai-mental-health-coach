@@ -53,6 +53,7 @@ function switchToVoiceMode() {
     document.getElementById('voicePage').classList.add('active');
     if (!window.voiceApp) window.voiceApp = new VoiceTherapyApp();
     window.voiceApp.activate();
+    window.voiceApp.loadChatHistory();
 }
 function switchToChatMode() {
     currentMode = 'chat';
@@ -60,6 +61,7 @@ function switchToChatMode() {
     document.getElementById('chatPage').classList.add('active');
     if (!window.chatApp) window.chatApp = new ChatTherapyApp();
     window.chatApp.activate();
+    window.chatApp.loadChatHistory();
 }
 function goToLanding() {
     currentMode = 'landing';
@@ -277,7 +279,7 @@ class VoiceTherapyApp {
         this.updateVoiceAnimation('listening');
         this.updateRecordBtnUI('recording');
         this.updateAudioVisualizer();
-        this.monitorSilence(); // start silence monitoring
+        this.monitorSilence();
     }
     stopRecording() {
         if (!this.isRecording || !this.mediaRecorder) return;
@@ -298,9 +300,7 @@ class VoiceTherapyApp {
         source.connect(analyser);
         analyser.fftSize = 2048;
         const buffer = new Uint8Array(analyser.fftSize);
-
         let silenceStart = null;
-
         const checkSilence = () => {
             analyser.getByteTimeDomainData(buffer);
             let sum = 0;
@@ -309,7 +309,6 @@ class VoiceTherapyApp {
                 sum += normalized * normalized;
             }
             let rms = Math.sqrt(sum / buffer.length);
-
             if (rms < this.silenceThreshold) {
                 if (silenceStart === null) silenceStart = performance.now();
                 else if (performance.now() - silenceStart > this.silenceDuration) {
@@ -367,6 +366,7 @@ class VoiceTherapyApp {
         }
         this.updateRecordBtnUI('idle');
         this.updateStatus('Click microphone to speak again');
+        this.scrollToBottom();
     }
     async playAudioResponse(audioPath) {
         return new Promise((resolve) => {
@@ -492,6 +492,23 @@ class VoiceTherapyApp {
             this.loadChatHistory();
         }
     }
+    loadChatHistory() {
+        if (!this.messagesContainer) return;
+        const existingMessages = this.messagesContainer.querySelectorAll('.message-slide-in');
+        existingMessages.forEach(msg => msg.remove());
+        const messages = this.conversationManager.getAllSessionMessages()
+            .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        messages.forEach(msg => {
+            this.addMessageToUI(
+                msg.content,
+                msg.role,
+                msg.type,
+                msg.metadata?.audioPath,
+                msg.type === 'text' && msg.metadata && msg.metadata.isTranscript
+            );
+        });
+        this.scrollToBottom();
+    }
 }
 
 class ChatTherapyApp {
@@ -591,6 +608,7 @@ class ChatTherapyApp {
             this.conversationManager.addMessage(fallbackResponse, 'assistant', 'text');
             this.addMessageToUI(fallbackResponse, 'assistant', 'text');
         }
+        this.scrollToBottom();
     }
     addMessageToUI(content, role, type = 'text', audioPath = null, isTranscript = false) {
         if (!this.messagesContainer) return;
@@ -629,7 +647,7 @@ class ChatTherapyApp {
                 msg.role,
                 msg.type,
                 msg.metadata?.audioPath,
-                false
+                msg.type === 'text' && msg.metadata && msg.metadata.isTranscript
             );
         });
         this.scrollToBottom();

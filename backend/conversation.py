@@ -35,7 +35,6 @@ class GeminiChatSession:
         return None
 
     def generate_solution(self) -> str:
-        # Gemini will see whole history, including system instructions as first model message
         return get_gemini_chat_completion(self.chat_history)
 
     def run_chat(self, user_messages: List[str]) -> dict:
